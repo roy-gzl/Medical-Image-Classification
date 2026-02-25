@@ -1,4 +1,6 @@
-﻿import statistics
+﻿"""Entry point for multi-seed training/evaluation experiments."""
+
+import statistics
 from pathlib import Path
 
 import torch
@@ -17,9 +19,12 @@ from engine import (
 )
 from models import build_model
 from utils import save_json, set_seed
+from analyze_case_trends import analyze as analyze_case_trends
+from stat_tests import run_mannwhitney_analysis
 
 
 def _select_device(cpu: bool):
+    # Pick CUDA when available unless CPU is explicitly requested.
     if (not cpu) and torch.cuda.is_available():
         device = torch.device("cuda")
         torch.backends.cudnn.benchmark = True
@@ -31,7 +36,24 @@ def _select_device(cpu: bool):
     return device
 
 
+def _make_unique_experiment_dir(save_root: Path, exp_name: str) -> Path:
+    # Create a new directory even when the same experiment name already exists.
+    base_dir = save_root / exp_name
+    if not base_dir.exists():
+        base_dir.mkdir(parents=True, exist_ok=False)
+        return base_dir
+
+    idx = 1
+    while True:
+        candidate = save_root / f"{exp_name}_run{idx:03d}"
+        if not candidate.exists():
+            candidate.mkdir(parents=True, exist_ok=False)
+            return candidate
+        idx += 1
+
+
 def _run_single_seed(cfg, seed: int, base_out_dir: Path, device):
+    # Run one full train/val/test cycle and persist per-seed artifacts.
     set_seed(seed)
 
     seed_out_dir = base_out_dir / f"seed_{seed}"
@@ -41,35 +63,31 @@ def _run_single_seed(cfg, seed: int, base_out_dir: Path, device):
     cfg_dump["seed"] = seed
     save_json(seed_out_dir / "config.json", cfg_dump)
 
+    # Build loaders/model for this seed.
     loaders, class_to_idx, samples_test = prepare_datasets_and_loaders(cfg)
     model = build_model(cfg.model_name, num_classes=cfg.num_classes, pretrained=cfg.pretrained).to(device)
 
+    # Train with best checkpoint tracking.
     best_ckpt_path = seed_out_dir / "best.pt"
     model = train_loop(cfg, model, loaders, device, best_ckpt_path)
 
+    # Evaluate test split.
     test_loss, test_acc = evaluate(model, loaders["test"], device, amp=cfg.amp)
     print(f"[test][seed={seed}] loss={test_loss:.4f} acc={test_acc:.4f}")
 
+    # Predict labels for confusion matrix and case extraction.
     y_true, y_pred = predict_labels(model, loaders["test"], device, amp=cfg.amp)
     conf_mat = build_confusion_matrix(y_true, y_pred, num_classes=cfg.num_classes)
 
     idx_to_class = {v: k for k, v in class_to_idx.items()}
     class_names = [idx_to_class[i] for i in range(cfg.num_classes)]
 
-    cm_png = seed_out_dir / "confusion_matrix.png"
-    cm_pdf = seed_out_dir / "confusion_matrix.pdf"
-    save_confusion_matrix_figure(
-        conf_mat,
-        out_png_path=cm_png,
-        out_pdf_path=cm_pdf,
-        class_names=class_names,
-        positive_class_idx=1,
-    )
-
     result = {
         "seed": seed,
         "test_loss": float(test_loss),
         "test_acc": float(test_acc),
+        "confusion_matrix": conf_mat.tolist(),
+        "class_names": class_names,
     }
 
     cm_payload = {
@@ -86,11 +104,11 @@ def _run_single_seed(cfg, seed: int, base_out_dir: Path, device):
             f"(positive_class={class_names[1]})"
         )
 
+    # Per-seed confusion matrix figure is intentionally skipped.
     save_json(seed_out_dir / "confusion_matrix.json", cm_payload)
-    print(f"[saved] {cm_png}")
-    print(f"[saved] {cm_pdf}")
     print(f"[saved] {seed_out_dir / 'confusion_matrix.json'}")
 
+    # Save TP/TN/FP/FN sampled cases.
     if cfg.save_case_images:
         cases = save_case_images(
             samples=samples_test,
@@ -101,19 +119,26 @@ def _run_single_seed(cfg, seed: int, base_out_dir: Path, device):
             exp_name=f"{base_out_dir.name}_seed{seed}",
             max_correct_images=cfg.max_correct_images,
         )
+        print(f"[saved] TP images: {cases['counts']['TP']} -> {cases['tp_dir']}")
+        print(f"[saved] TN images: {cases['counts']['TN']} -> {cases['tn_dir']}")
         print(f"[saved] FP images: {cases['counts']['FP']} -> {cases['fp_dir']}")
         print(f"[saved] FN images: {cases['counts']['FN']} -> {cases['fn_dir']}")
-        print(f"[saved] CORRECT images: {cases['counts']['CORRECT']} -> {cases['correct_dir']}")
 
+    # Optional CSV export of test predictions.
     if cfg.save_test_preds:
         out_csv = seed_out_dir / f"test_preds_{cfg.model_name}.csv"
         predict_to_csv(model, loaders["test"], device, samples_test, idx_to_class, out_csv, amp=cfg.amp)
         print(f"[saved] {out_csv}")
 
+    # Run trend analysis and save into seed_xx/analyze/.
+    analyze_out = analyze_case_trends(base_out_dir, seed=seed, out_dir=seed_out_dir / "analyze")
+    print(f"[saved] {analyze_out}")
+
     return result
 
 
 def _mean_std(values):
+    """Return mean/std with a safe fallback for 0 or 1 samples."""
     if not values:
         return {"mean": 0.0, "std": 0.0}
     if len(values) == 1:
@@ -126,9 +151,10 @@ def main():
     device = _select_device(cfg.cpu)
 
     exp_name = make_experiment_name(cfg)
-    out_dir = Path(cfg.save_dir) / exp_name
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _make_unique_experiment_dir(Path(cfg.save_dir), exp_name)
+    print(f"[run-dir] {out_dir}")
 
+    # Example: seed=42, num_seeds=5 -> [42, 43, 44, 45, 46]
     seeds = [cfg.seed + i for i in range(cfg.num_seeds)]
     print(f"[multi-seed] seeds={seeds}")
 
@@ -137,6 +163,7 @@ def main():
         print(f"\n[multi-seed] run {idx}/{len(seeds)} seed={seed}")
         all_results.append(_run_single_seed(cfg, seed, out_dir, device))
 
+    # Aggregate statistics for reporting reproducibility.
     acc_stats = _mean_std([r["test_acc"] for r in all_results])
     loss_stats = _mean_std([r["test_loss"] for r in all_results])
 
@@ -151,13 +178,48 @@ def main():
         for key in ["tp", "fp", "fn", "tn"]:
             summary[key] = _mean_std([float(r[key]) for r in all_results])
 
+    # Build and save only one confusion matrix figure: mean across seeds.
+    class_names = all_results[0].get("class_names", [str(i) for i in range(cfg.num_classes)])
+
+    mean_conf_mat = torch.tensor([r["confusion_matrix"] for r in all_results], dtype=torch.float32).mean(dim=0)
+
+    mean_cm_png = out_dir / "confusion_matrix_mean.png"
+    mean_cm_pdf = out_dir / "confusion_matrix_mean.pdf"
+    save_confusion_matrix_figure(
+        mean_conf_mat,
+        out_png_path=mean_cm_png,
+        out_pdf_path=mean_cm_pdf,
+        class_names=class_names,
+        positive_class_idx=1,
+    )
+
+    mean_cm_payload = {
+        "labels": class_names,
+        "matrix_mean": mean_conf_mat.tolist(),
+    }
+    if cfg.num_classes == 2:
+        mean_cm_payload.update(
+            {
+                "tp_mean": summary["tp"]["mean"],
+                "fp_mean": summary["fp"]["mean"],
+                "fn_mean": summary["fn"]["mean"],
+                "tn_mean": summary["tn"]["mean"],
+            }
+        )
+    save_json(out_dir / "confusion_matrix_mean.json", mean_cm_payload)
+
     summary_payload = {
         "experiment": exp_name,
+        "run_dir": out_dir.name,
         "runs": all_results,
         "summary": summary,
+        "mean_confusion_matrix": mean_cm_payload,
     }
     summary_path = out_dir / "multi_seed_summary.json"
     save_json(summary_path, summary_payload)
+
+    # Statistical tests: per-seed Mann-Whitney and cross-seed reproducibility.
+    stats_out = run_mannwhitney_analysis(out_dir, alpha=0.05, out_dir=out_dir / "stats_tests")
 
     print("\n[multi-seed][summary]")
     print(
@@ -171,7 +233,14 @@ def main():
             f"FN mean={summary['fn']['mean']:.2f} std={summary['fn']['std']:.2f}, "
             f"TN mean={summary['tn']['mean']:.2f} std={summary['tn']['std']:.2f}"
         )
+
+    print(f"[saved] {mean_cm_png}")
+    print(f"[saved] {mean_cm_pdf}")
+    print(f"[saved] {out_dir / 'confusion_matrix_mean.json'}")
     print(f"[saved] {summary_path}")
+    print(f"[saved] {stats_out['per_seed_csv']}")
+    print(f"[saved] {stats_out['reproducibility_csv']}")
+    print(f"[saved] {stats_out['json']}")
 
 
 if __name__ == "__main__":

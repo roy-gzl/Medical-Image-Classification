@@ -10,7 +10,7 @@ class Config:
     num_classes: int = 2
 
     # Model
-    model_name: str = "resnet18"
+    model_name: str = "efficientnet_b0"
     pretrained: bool = True
 
     # Training
@@ -44,6 +44,7 @@ class Config:
 
 
 def get_config() -> Config:
+    # Parse CLI flags and build the runtime config object.
     p = argparse.ArgumentParser()
 
     p.add_argument("--dataset_dir", type=str, default="Dataset")
@@ -84,6 +85,7 @@ def get_config() -> Config:
 
     args = p.parse_args()
 
+    # Defaults are explicitly set here, then overridden by toggle flags below.
     cfg = Config(
         dataset_dir=args.dataset_dir,
         img_size=args.img_size,
@@ -139,6 +141,7 @@ def get_config() -> Config:
 
 
 def make_experiment_name(cfg: Config) -> str:
+    # Build folder name used under `runs/` for one experiment setting.
     aug = 1 if cfg.use_augmentation else 0
     amp = 1 if cfg.amp else 0
     return f"{cfg.model_name}_sz{cfg.img_size}_bs{cfg.batch_size}_lr{cfg.lr}_wd{cfg.weight_decay}_aug{aug}_amp{amp}"

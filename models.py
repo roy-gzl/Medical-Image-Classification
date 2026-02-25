@@ -1,8 +1,9 @@
-import torch.nn as nn
+﻿import torch.nn as nn
 from torchvision import models
 
 
 def build_model(model_name: str, num_classes: int = 2, pretrained: bool = True):
+    # Create model and replace final classifier for target class count.
     model_name = model_name.lower()
 
     if model_name == "resnet18":

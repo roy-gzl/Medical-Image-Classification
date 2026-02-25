@@ -1,4 +1,6 @@
-﻿import copy
+﻿"""Training/evaluation helpers and report artifact generation."""
+
+import copy
 import shutil
 from pathlib import Path
 
@@ -8,6 +10,7 @@ import torch.optim as optim
 
 
 def build_optimizer(cfg, model):
+    # Create optimizer from config.
     if cfg.optimizer.lower() == "adam":
         return optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     if cfg.optimizer.lower() == "sgd":
@@ -16,11 +19,12 @@ def build_optimizer(cfg, model):
 
 
 def _to_device(x, y, device):
-    # pin_memory=True DataLoader とセットで有効
+    # Move a mini-batch to the selected device with non_blocking transfer.
     return x.to(device, non_blocking=True), y.to(device, non_blocking=True)
 
 
 def train_one_epoch(model, loader, optimizer, device, scaler, amp: bool, grad_clip_norm: float):
+    # Run one training epoch and return average loss/accuracy.
     model.train()
     criterion = nn.CrossEntropyLoss()
 
@@ -62,6 +66,7 @@ def train_one_epoch(model, loader, optimizer, device, scaler, amp: bool, grad_cl
 
 @torch.no_grad()
 def evaluate(model, loader, device, amp: bool):
+    # Evaluate model on validation/test loader.
     model.eval()
     criterion = nn.CrossEntropyLoss()
 
@@ -86,6 +91,7 @@ def evaluate(model, loader, device, amp: bool):
 
 @torch.no_grad()
 def predict_labels(model, loader, device, amp: bool):
+    # Return all true/predicted labels in loader order.
     model.eval()
     y_true = []
     y_pred = []
@@ -103,6 +109,7 @@ def predict_labels(model, loader, device, amp: bool):
 
 
 def build_confusion_matrix(y_true, y_pred, num_classes: int):
+    # Build confusion matrix where rows=true class, cols=predicted class.
     conf_mat = torch.zeros((num_classes, num_classes), dtype=torch.int64)
     for yt, yp in zip(y_true, y_pred):
         conf_mat[int(yt), int(yp)] += 1
@@ -110,6 +117,7 @@ def build_confusion_matrix(y_true, y_pred, num_classes: int):
 
 
 def binary_confusion_counts(conf_mat, positive_class_idx: int = 1):
+    # Extract TP/FP/FN/TN from a 2x2 confusion matrix.
     if conf_mat.shape != (2, 2):
         raise ValueError("binary_confusion_counts requires a 2x2 confusion matrix")
     if positive_class_idx not in (0, 1):
@@ -131,9 +139,10 @@ def save_confusion_matrix_figure(
     class_names=None,
     positive_class_idx: int = 1,
 ):
+    # Render confusion matrix as PNG and PDF for report insertion.
     from PIL import Image, ImageDraw, ImageFont
 
-    conf_mat = conf_mat.cpu()
+    conf_mat = conf_mat.cpu().float()
     rows, cols = conf_mat.shape
     if rows != cols:
         raise ValueError("confusion matrix must be square")
@@ -157,12 +166,12 @@ def save_confusion_matrix_figure(
     draw.text((margin_left, 140), "Predicted Label", fill=(0, 0, 0), font=font)
     draw.text((70, margin_top - 30), "True Label", fill=(0, 0, 0), font=font)
 
-    max_count = int(conf_mat.max().item()) if conf_mat.numel() > 0 else 1
-    max_count = max(max_count, 1)
+    max_count = float(conf_mat.max().item()) if conf_mat.numel() > 0 else 1.0
+    max_count = max(max_count, 1.0)
 
     for r in range(rows):
         for c in range(cols):
-            value = int(conf_mat[r, c].item())
+            value = float(conf_mat[r, c].item())
             intensity = int(235 - 160 * (value / max_count))
             color = (intensity, intensity, 255)
 
@@ -173,20 +182,20 @@ def save_confusion_matrix_figure(
 
             draw.rectangle([x0, y0, x1, y1], fill=color, outline=(20, 20, 20), width=2)
 
-            label = f"count: {value}"
+            label = f"count\n{value:.2f}"
             if rows == 2:
                 if positive_class_idx not in (0, 1):
                     raise ValueError("positive_class_idx must be 0 or 1 for binary classification")
                 negative_class_idx = 1 - positive_class_idx
 
                 if r == positive_class_idx and c == positive_class_idx:
-                    label = f"TP\n{value}"
+                    label = f"TP\n{value:.2f}"
                 elif r == negative_class_idx and c == positive_class_idx:
-                    label = f"FP\n{value}"
+                    label = f"FP\n{value:.2f}"
                 elif r == positive_class_idx and c == negative_class_idx:
-                    label = f"FN\n{value}"
+                    label = f"FN\n{value:.2f}"
                 elif r == negative_class_idx and c == negative_class_idx:
-                    label = f"TN\n{value}"
+                    label = f"TN\n{value:.2f}"
 
             draw.multiline_text((x0 + 10, y0 + 10), label, fill=(0, 0, 0), font=font, spacing=4)
 
@@ -195,11 +204,18 @@ def save_confusion_matrix_figure(
         draw.text((margin_left - 45, margin_top + i * cell_size + 8), str(class_name), fill=(0, 0, 0), font=font)
 
     if rows == 2:
-        counts = binary_confusion_counts(conf_mat, positive_class_idx=positive_class_idx)
+        if positive_class_idx not in (0, 1):
+            raise ValueError("positive_class_idx must be 0 or 1 for binary classification")
+        negative_class_idx = 1 - positive_class_idx
+        tp = float(conf_mat[positive_class_idx, positive_class_idx].item())
+        fp = float(conf_mat[negative_class_idx, positive_class_idx].item())
+        fn = float(conf_mat[positive_class_idx, negative_class_idx].item())
+        tn = float(conf_mat[negative_class_idx, negative_class_idx].item())
+
         summary_y = matrix_bottom + 55
         draw.text(
             (margin_left, summary_y),
-            f"TP: {counts['tp']}   FP: {counts['fp']}   FN: {counts['fn']}   TN: {counts['tn']}",
+            f"TP: {tp:.2f}   FP: {fp:.2f}   FN: {fn:.2f}   TN: {tn:.2f}",
             fill=(0, 0, 0),
             font=font,
         )
@@ -217,27 +233,31 @@ def save_confusion_matrix_figure(
 
 
 def _safe_label(text: str) -> str:
+    # Sanitize class names for filesystem-safe file names.
     return str(text).replace("/", "_").replace("\\", "_").replace(" ", "_")
 
 
 def save_case_images(samples, y_true, y_pred, idx_to_class, output_root, exp_name: str, max_correct_images: int = 30):
+    # Save TP/TN/FP/FN (and MIS for non-binary errors) for qualitative analysis.
     if not (len(samples) == len(y_true) == len(y_pred)):
         raise RuntimeError(
             f"length mismatch: samples={len(samples)} y_true={len(y_true)} y_pred={len(y_pred)}"
         )
 
     output_root = Path(output_root)
+    tp_dir = output_root / "TP"
+    tn_dir = output_root / "TN"
     fp_dir = output_root / "FP"
     fn_dir = output_root / "FN"
-    correct_dir = output_root / "CORRECT"
     mis_dir = output_root / "MIS"
 
+    tp_dir.mkdir(parents=True, exist_ok=True)
+    tn_dir.mkdir(parents=True, exist_ok=True)
     fp_dir.mkdir(parents=True, exist_ok=True)
     fn_dir.mkdir(parents=True, exist_ok=True)
-    correct_dir.mkdir(parents=True, exist_ok=True)
     mis_dir.mkdir(parents=True, exist_ok=True)
 
-    counts = {"FP": 0, "FN": 0, "CORRECT": 0, "MIS": 0}
+    counts = {"TP": 0, "TN": 0, "FP": 0, "FN": 0, "MIS": 0}
     max_correct_images = max(0, int(max_correct_images))
 
     for i, ((img_path, _sample_y), yt, yp) in enumerate(zip(samples, y_true, y_pred)):
@@ -249,11 +269,25 @@ def save_case_images(samples, y_true, y_pred, idx_to_class, output_root, exp_nam
         src_path = Path(img_path)
 
         if yt == yp:
-            if counts["CORRECT"] >= max_correct_images:
-                continue
-            dst_dir = correct_dir
-            case = "CORRECT"
-            counts["CORRECT"] += 1
+            if yt == 1:
+                if counts["TP"] >= max_correct_images:
+                    continue
+                dst_dir = tp_dir
+                case = "TP"
+                counts["TP"] += 1
+            elif yt == 0:
+                if counts["TN"] >= max_correct_images:
+                    continue
+                dst_dir = tn_dir
+                case = "TN"
+                counts["TN"] += 1
+            else:
+                # For multi-class equal predictions, store under MIS-free positive bucket.
+                if counts["TP"] >= max_correct_images:
+                    continue
+                dst_dir = tp_dir
+                case = "TP"
+                counts["TP"] += 1
         else:
             if yt == 0 and yp == 1:
                 dst_dir = fp_dir
@@ -274,13 +308,15 @@ def save_case_images(samples, y_true, y_pred, idx_to_class, output_root, exp_nam
     return {
         "counts": counts,
         "output_root": str(output_root),
+        "tp_dir": str(tp_dir),
+        "tn_dir": str(tn_dir),
         "fp_dir": str(fp_dir),
         "fn_dir": str(fn_dir),
-        "correct_dir": str(correct_dir),
     }
 
 
 def train_loop(cfg, model, loaders, device, best_ckpt_path):
+    # Train with validation monitoring, scheduler, and early stopping.
     optimizer = build_optimizer(cfg, model)
 
     scheduler = None
@@ -330,7 +366,9 @@ def train_loop(cfg, model, loaders, device, best_ckpt_path):
 
 @torch.no_grad()
 def predict_to_csv(model, test_loader, device, samples, idx_to_class, out_csv_path, amp: bool):
+    # Save per-sample test predictions to CSV.
     import csv
+
     model.eval()
 
     preds = []
@@ -349,3 +387,4 @@ def predict_to_csv(model, test_loader, device, samples, idx_to_class, out_csv_pa
 
     with open(out_csv_path, "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerows(rows)
+

@@ -1,8 +1,9 @@
-import hashlib
+﻿import hashlib
 from pathlib import Path
 
 
 def file_hash(path: Path, chunk_size=8192):
+    # Compute MD5 hash of one file.
     md5 = hashlib.md5()
     with open(path, "rb") as f:
         while chunk := f.read(chunk_size):
@@ -11,6 +12,7 @@ def file_hash(path: Path, chunk_size=8192):
 
 
 def collect_hashes(directory: Path):
+    # Map hash -> image path for all PNG files under a directory.
     hashes = {}
     for img_path in directory.rglob("*.png"):
         h = file_hash(img_path)
@@ -29,15 +31,14 @@ def main():
     test_hashes = collect_hashes(test_dir)
 
     duplicates = []
-
     for h, test_path in test_hashes.items():
         if h in train_hashes:
             duplicates.append((train_hashes[h], test_path))
 
     if len(duplicates) == 0:
-        print("✅ No duplicate images between train and test.")
+        print("No duplicate images between train and test.")
     else:
-        print(f"⚠ Found {len(duplicates)} duplicate images:")
+        print(f"Found {len(duplicates)} duplicate images:")
         for train_img, test_img in duplicates:
             print("TRAIN:", train_img)
             print("TEST :", test_img)
