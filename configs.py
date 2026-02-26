@@ -53,7 +53,7 @@ def get_config() -> Config:
     p.add_argument("--dataset_dir", type=str, default="Dataset")
     p.add_argument("--img_size", type=int, default=224)
 
-    p.add_argument("--model_name", type=str, default="vgg16", choices=["resnet18", "vgg16", "efficientnet_b0"])
+    p.add_argument("--model_name", type=str, default="resnet18", choices=["resnet18", "vgg16", "efficientnet_b0"])
     p.add_argument("--pretrained", action="store_true")
     p.add_argument("--no_pretrained", action="store_true")
 
