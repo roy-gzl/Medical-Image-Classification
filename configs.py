@@ -10,7 +10,7 @@ class Config:
     num_classes: int = 2
 
     # Model
-    model_name: str = "resnet18"
+    model_name: str = "vgg16"
     pretrained: bool = True
 
     # Training
@@ -53,7 +53,7 @@ def get_config() -> Config:
     p.add_argument("--dataset_dir", type=str, default="Dataset")
     p.add_argument("--img_size", type=int, default=224)
 
-    p.add_argument("--model_name", type=str, default="resnet18", choices=["resnet18", "vgg16", "efficientnet_b0"])
+    p.add_argument("--model_name", type=str, default="vgg16", choices=["resnet18", "vgg16", "efficientnet_b0"])
     p.add_argument("--pretrained", action="store_true")
     p.add_argument("--no_pretrained", action="store_true")
 
@@ -106,7 +106,7 @@ def get_config() -> Config:
         use_scheduler=True,
         amp=True,
         grad_clip_norm=args.grad_clip_norm,
-        use_augmentation=True,
+        use_augmentation=False,
         rotation_deg=args.rotation_deg,
         num_workers=args.num_workers,
         seed=args.seed,

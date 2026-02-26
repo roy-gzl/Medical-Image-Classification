@@ -11,3 +11,6 @@ miniconda*.sh
 
 # Experiment outputs
 runs/
+/runs
+*.png
+*.png
