@@ -1,0 +1,13 @@
+﻿# Dataset
+Dataset/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Miniconda installers
+Miniconda*.sh
+miniconda*.sh
+
+# Experiment outputs
+runs/
