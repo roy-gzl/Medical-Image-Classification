@@ -1,0 +1,12 @@
+.DS_Store
+
+# Dataset
+Dataset/
+
+# Python cache/bytecode
+__pycache__/
+*.py[cod]
+
+# Miniconda installer scripts
+Miniconda*.sh
+Anaconda*.sh
