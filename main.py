@@ -1,6 +1,8 @@
 ﻿"""Entry point for multi-seed training/evaluation experiments."""
 
+import copy
 import statistics
+import time
 from pathlib import Path
 
 import torch
@@ -21,6 +23,10 @@ from models import build_model
 from utils import save_json, set_seed
 from analyze_case_trends import analyze as analyze_case_trends
 from stat_tests import run_mannwhitney_analysis
+
+
+LR_SEARCH_CANDIDATES = [1e-5, 3e-5, 1e-4, 3e-4, 1e-3]
+WD_SEARCH_CANDIDATES = [0.0, 1e-5, 1e-4, 1e-3]
 
 
 def _select_device(cpu: bool):
@@ -54,6 +60,7 @@ def _make_unique_experiment_dir(save_root: Path, exp_name: str) -> Path:
 
 def _run_single_seed(cfg, seed: int, base_out_dir: Path, device):
     # Run one full train/val/test cycle and persist per-seed artifacts.
+    seed_start = time.perf_counter()
     set_seed(seed)
 
     seed_out_dir = base_out_dir / f"seed_{seed}"
@@ -134,6 +141,17 @@ def _run_single_seed(cfg, seed: int, base_out_dir: Path, device):
     analyze_out = analyze_case_trends(base_out_dir, seed=seed, out_dir=seed_out_dir / "analyze")
     print(f"[saved] {analyze_out}")
 
+    seed_duration_sec = float(time.perf_counter() - seed_start)
+    result["duration_sec"] = seed_duration_sec
+
+    seed_timing_payload = {
+        "seed": seed,
+        "duration_sec": seed_duration_sec,
+        "duration_min": seed_duration_sec / 60.0,
+    }
+    save_json(seed_out_dir / "timing.json", seed_timing_payload)
+    print(f"[saved] {seed_out_dir / 'timing.json'}")
+
     return result
 
 
@@ -146,9 +164,8 @@ def _mean_std(values):
     return {"mean": float(statistics.mean(values)), "std": float(statistics.stdev(values))}
 
 
-def main():
-    cfg = get_config()
-    device = _select_device(cfg.cpu)
+def _run_experiment(cfg, device):
+    total_start = time.perf_counter()
 
     exp_name = make_experiment_name(cfg)
     out_dir = _make_unique_experiment_dir(Path(cfg.save_dir), exp_name)
@@ -208,12 +225,24 @@ def main():
         )
     save_json(out_dir / "confusion_matrix_mean.json", mean_cm_payload)
 
+    # Timing summary JSON.
+    per_seed_durations = [float(r.get("duration_sec", 0.0)) for r in all_results]
+    total_duration_sec = float(time.perf_counter() - total_start)
+    timing_payload = {
+        "total_duration_sec": total_duration_sec,
+        "total_duration_min": total_duration_sec / 60.0,
+        "per_seed_duration_sec": per_seed_durations,
+        "per_seed_duration_stats_sec": _mean_std(per_seed_durations),
+    }
+    save_json(out_dir / "run_timing.json", timing_payload)
+
     summary_payload = {
         "experiment": exp_name,
         "run_dir": out_dir.name,
         "runs": all_results,
         "summary": summary,
         "mean_confusion_matrix": mean_cm_payload,
+        "timing": timing_payload,
     }
     summary_path = out_dir / "multi_seed_summary.json"
     save_json(summary_path, summary_payload)
@@ -237,10 +266,88 @@ def main():
     print(f"[saved] {mean_cm_png}")
     print(f"[saved] {mean_cm_pdf}")
     print(f"[saved] {out_dir / 'confusion_matrix_mean.json'}")
+    print(f"[saved] {out_dir / 'run_timing.json'}")
     print(f"[saved] {summary_path}")
     print(f"[saved] {stats_out['per_seed_csv']}")
     print(f"[saved] {stats_out['reproducibility_csv']}")
     print(f"[saved] {stats_out['json']}")
+
+    return {
+        "out_dir": str(out_dir),
+        "summary": summary,
+        "summary_path": str(summary_path),
+    }
+
+
+def _run_lr_wd_search(cfg, device):
+    search_start = time.perf_counter()
+
+    search_name = f"{cfg.model_name}_lrwd_search_sz{cfg.img_size}_bs{cfg.batch_size}_aug{int(cfg.use_augmentation)}_amp{int(cfg.amp)}"
+    search_root = _make_unique_experiment_dir(Path(cfg.save_dir), search_name)
+    print(f"[search-root] {search_root}")
+
+    trials = []
+
+    for lr in LR_SEARCH_CANDIDATES:
+        for wd in WD_SEARCH_CANDIDATES:
+            trial_cfg = copy.deepcopy(cfg)
+            trial_cfg.tune_lr_wd = False
+            trial_cfg.lr = float(lr)
+            trial_cfg.weight_decay = float(wd)
+            trial_cfg.save_dir = str(search_root)
+
+            print(f"\n[lr/wd-search] lr={trial_cfg.lr} wd={trial_cfg.weight_decay}")
+            trial_result = _run_experiment(trial_cfg, device)
+            trial_summary = trial_result["summary"]
+
+            trials.append(
+                {
+                    "lr": trial_cfg.lr,
+                    "weight_decay": trial_cfg.weight_decay,
+                    "run_dir": Path(trial_result["out_dir"]).name,
+                    "test_acc_mean": float(trial_summary["test_acc"]["mean"]),
+                    "test_acc_std": float(trial_summary["test_acc"]["std"]),
+                    "test_loss_mean": float(trial_summary["test_loss"]["mean"]),
+                    "test_loss_std": float(trial_summary["test_loss"]["std"]),
+                }
+            )
+
+    if not trials:
+        raise RuntimeError("lr/wd search produced no trials")
+
+    best_trial = max(trials, key=lambda t: (t["test_acc_mean"], -t["test_loss_mean"]))
+
+    search_payload = {
+        "mode": "lr_wd_search",
+        "search_root": str(search_root),
+        "num_trials": len(trials),
+        "lr_candidates": LR_SEARCH_CANDIDATES,
+        "weight_decay_candidates": WD_SEARCH_CANDIDATES,
+        "ranking": sorted(trials, key=lambda t: (t["test_acc_mean"], -t["test_loss_mean"]), reverse=True),
+        "best": best_trial,
+        "duration_sec": float(time.perf_counter() - search_start),
+    }
+
+    summary_path = search_root / "lr_wd_search_summary.json"
+    save_json(summary_path, search_payload)
+
+    print("\n[lr/wd-search][best]")
+    print(
+        f"lr={best_trial['lr']} wd={best_trial['weight_decay']} "
+        f"acc_mean={best_trial['test_acc_mean']:.4f} loss_mean={best_trial['test_loss_mean']:.4f}"
+    )
+    print(f"[saved] {summary_path}")
+
+
+def main():
+    cfg = get_config()
+    device = _select_device(cfg.cpu)
+
+    if cfg.tune_lr_wd:
+        _run_lr_wd_search(cfg, device)
+        return
+
+    _run_experiment(cfg, device)
 
 
 if __name__ == "__main__":
