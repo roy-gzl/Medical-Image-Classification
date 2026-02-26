@@ -10,7 +10,7 @@ class Config:
     num_classes: int = 2
 
     # Model
-    model_name: str = "efficientnet_b0"
+    model_name: str = "resnet18"
     pretrained: bool = True
 
     # Training
@@ -27,7 +27,7 @@ class Config:
     grad_clip_norm: float = 0.0
 
     # Augmentation
-    use_augmentation: bool = True
+    use_augmentation: bool = False
     rotation_deg: int = 10
 
     # System
@@ -41,6 +41,9 @@ class Config:
     save_test_preds: bool = False
     save_case_images: bool = True
     max_correct_images: int = 30
+
+    # Mode
+    tune_lr_wd: bool = False
 
 
 def get_config() -> Config:
@@ -83,6 +86,9 @@ def get_config() -> Config:
     p.add_argument("--no_case_images", action="store_true")
     p.add_argument("--max_correct_images", type=int, default=30)
 
+    p.add_argument("--tune_lr_wd", action="store_true")
+    p.add_argument("--no_tune_lr_wd", action="store_true")
+
     args = p.parse_args()
 
     # Defaults are explicitly set here, then overridden by toggle flags below.
@@ -110,6 +116,7 @@ def get_config() -> Config:
         save_test_preds=args.save_test_preds,
         save_case_images=True,
         max_correct_images=max(0, args.max_correct_images),
+        tune_lr_wd=False,
     )
 
     if args.no_pretrained:
@@ -136,6 +143,11 @@ def get_config() -> Config:
         cfg.save_case_images = False
     if args.save_case_images:
         cfg.save_case_images = True
+
+    if args.no_tune_lr_wd:
+        cfg.tune_lr_wd = False
+    if args.tune_lr_wd:
+        cfg.tune_lr_wd = True
 
     return cfg
 
