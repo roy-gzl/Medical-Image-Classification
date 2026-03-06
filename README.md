@@ -74,28 +74,26 @@ python main.py --model_name resnet18 --tune_lr_wd
 
 ## 出力（`runs/<experiment>/`）
 
-代表的な出力:
-
-- `seed_XX/`
-  - `best.pt`（best val accuracy時の重み）
-  - `config.json`
-  - `confusion_matrix.json`
-  - `timing.json`
-  - `misclassified/{TP,TN,FP,FN}/...png`
+- `/seed_XX/`
+  - `best.pt` : そのseedで`val accuracy`が最高だったモデル重み
+  - `config.json` : そのseed実行時の設定値スナップショット
+  - `confusion_matrix.json` : そのseedの混同行列とTP/FP/FN/TN
+  - `timing.json` : そのseedの実行時間
+  - `misclassified/{TP,TN,FP,FN}/...png` : 分類結果別に保存した症例画像
   - `analyze/`
-    - `per_image_features.csv`
-    - `summary_quality_intensity.csv`
-    - `summary_texture.csv`
-    - `summary_confidence.csv`
-    - `summary_all.json`
-- 実験ルート
-  - `multi_seed_summary.json`
-  - `confusion_matrix_mean.png/.pdf/.json`
-  - `run_timing.json`
+    - `per_image_features.csv` : 画像ごとの特徴量・信頼度・グループ情報
+    - `summary_quality_intensity.csv` : 明るさ/コントラスト等の群別要約
+    - `summary_texture.csv` : テクスチャ特徴量の群別要約
+    - `summary_confidence.csv` : 信頼度指標の群別要約
+    - `summary_all.json` : 上記要約のJSON統合版
+- `/`
+  - `multi_seed_summary.json` : test指標・混同行列・時間の総合サマリ
+  - `confusion_matrix_mean.png/.pdf/.json` : seed平均の混同行列可視化/数値
+  - `run_timing.json` : 全seed合計およびseed別の時間統計
   - `stats_tests/`
-    - `per_seed_mannwhitney.csv`
-    - `reproducibility_summary.csv`
-    - `stats_summary.json`
+    - `per_seed_mannwhitney.csv` : seed単位のMann-Whitney検定結果
+    - `reproducibility_summary.csv` : seedを跨いだ有意性再現性サマリ
+    - `stats_summary.json` : 検定結果のJSON統合版
 
 ## 補助スクリプト
 
