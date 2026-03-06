@@ -29,6 +29,31 @@ EXCLUDE_NUMERIC_COLUMNS = {
 COMPARISONS = [("TP", "FP"), ("TN", "FN")]
 
 
+def parse_comparisons(spec: str) -> List[Tuple[str, str]]:
+    # Format: "TP:FP,TN:FN,TP:FN"
+    if not spec:
+        return list(COMPARISONS)
+
+    out: List[Tuple[str, str]] = []
+    for part in spec.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if ":" not in token:
+            raise ValueError(f"Invalid comparison token: {token}. Use A:B format.")
+        a, b = token.split(":", 1)
+        a = a.strip().upper()
+        b = b.strip().upper()
+        if not a or not b:
+            raise ValueError(f"Invalid comparison token: {token}. Use A:B format.")
+        out.append((a, b))
+
+    if not out:
+        raise ValueError("No valid comparisons parsed.")
+
+    return out
+
+
 def _to_float_or_none(s: str):
     try:
         return float(s)
@@ -178,13 +203,19 @@ def _seed_dirs(run_dir: Path) -> List[Path]:
     return sorted([d for d in run_dir.glob("seed_*") if d.is_dir()])
 
 
-def run_mannwhitney_analysis(run_dir: Path, alpha: float = 0.05, out_dir: Path | None = None):
+def run_mannwhitney_analysis(
+    run_dir: Path,
+    alpha: float = 0.05,
+    out_dir: Path | None = None,
+    comparisons: List[Tuple[str, str]] | None = None,
+):
     run_dir = Path(run_dir)
     if out_dir is None:
         out_dir = run_dir / "stats_tests"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     per_seed_rows = []
+    active_comparisons = comparisons if comparisons is not None else COMPARISONS
 
     for seed_dir in _seed_dirs(run_dir):
         seed_name = seed_dir.name
@@ -210,7 +241,7 @@ def run_mannwhitney_analysis(run_dir: Path, alpha: float = 0.05, out_dir: Path |
                 by_group_feat[(g, f)].append(v)
 
         seed_rows = []
-        for g1, g2 in COMPARISONS:
+        for g1, g2 in active_comparisons:
             for f in features:
                 x = np.asarray(by_group_feat[(g1, f)], dtype=np.float64)
                 y = np.asarray(by_group_feat[(g2, f)], dtype=np.float64)
@@ -339,7 +370,7 @@ def run_mannwhitney_analysis(run_dir: Path, alpha: float = 0.05, out_dir: Path |
             {
                 "run_dir": str(run_dir),
                 "alpha": alpha,
-                "comparisons": [f"{a}_vs_{b}" for a, b in COMPARISONS],
+                "comparisons": [f"{a}_vs_{b}" for a, b in active_comparisons],
                 "per_seed_count": len(per_seed_rows),
                 "reproducibility_count": len(repro_rows),
                 "per_seed_csv": str(per_seed_csv),
@@ -365,10 +396,17 @@ def main():
     p.add_argument("--run_dir", type=str, required=True)
     p.add_argument("--alpha", type=float, default=0.05)
     p.add_argument("--out_dir", type=str, default="")
+    p.add_argument("--comparisons", type=str, default="", help="Comma-separated pairs in A:B form, e.g. TP:FN or TP:FP,TN:FN")
     args = p.parse_args()
 
     out_dir = Path(args.out_dir) if args.out_dir else None
-    result = run_mannwhitney_analysis(Path(args.run_dir), alpha=args.alpha, out_dir=out_dir)
+    comparisons = parse_comparisons(args.comparisons)
+    result = run_mannwhitney_analysis(
+        Path(args.run_dir),
+        alpha=args.alpha,
+        out_dir=out_dir,
+        comparisons=comparisons,
+    )
     print(f"[saved] {result['per_seed_csv']}")
     print(f"[saved] {result['reproducibility_csv']}")
     print(f"[saved] {result['json']}")

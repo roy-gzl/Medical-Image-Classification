@@ -4,6 +4,7 @@
 import argparse
 import math
 import random
+import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -66,10 +67,53 @@ def _collect_images(run_dir: Path, category: str, seed: int | None):
     return paths
 
 
-def _select(paths, n: int, rng: random.Random):
+def _extract_case_id(path: Path) -> int | None:
+    # Use the first 4+ digit token in filename as case id when available.
+    m = re.search(r"(\d{4,})", path.name)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def _pairwise_gap_penalty(sampled: list[Path], min_id_gap: int) -> int:
+    if min_id_gap <= 0:
+        return 0
+    ids = [_extract_case_id(p) for p in sampled]
+    penalty = 0
+    for i in range(len(ids)):
+        if ids[i] is None:
+            continue
+        for j in range(i + 1, len(ids)):
+            if ids[j] is None:
+                continue
+            if abs(ids[i] - ids[j]) < min_id_gap:
+                penalty += 1
+    return penalty
+
+
+def _select(paths, n: int, rng: random.Random, min_id_gap: int, resample_trials: int = 200):
     if len(paths) <= n:
-        return paths
-    return sorted(rng.sample(paths, n))
+        out = list(paths)
+        rng.shuffle(out)
+        return out
+
+    # Random sampling with anti-continuity: prefer sets with fewer near-by ids.
+    best = None
+    best_penalty = None
+    for _ in range(max(1, resample_trials)):
+        cand = rng.sample(paths, n)
+        pen = _pairwise_gap_penalty(cand, min_id_gap=min_id_gap)
+        if best is None or pen < best_penalty:
+            best = cand
+            best_penalty = pen
+            if pen == 0:
+                break
+
+    rng.shuffle(best)
+    return best
 
 
 def build_case_gallery(
@@ -81,9 +125,11 @@ def build_case_gallery(
     n_per_category: int,
     cols: int,
     tile_size: int,
-    sample_seed: int,
+    sample_seed: int | None,
+    min_id_gap: int,
 ):
-    rng = random.Random(sample_seed)
+    # If sample_seed is None, use non-deterministic randomness.
+    rng = random.Random(sample_seed) if sample_seed is not None else random.Random()
 
     selected = {}
     counts = {}
@@ -91,7 +137,7 @@ def build_case_gallery(
 
     for cat in CATEGORIES:
         all_paths = _collect_images(run_dir, cat, seed)
-        picked = _select(all_paths, n_per_category, rng)
+        picked = _select(all_paths, n_per_category, rng, min_id_gap=max(0, min_id_gap))
         counts[cat] = len(all_paths)
         selected[cat] = picked
         rows_per_section.append(max(1, math.ceil(len(picked) / cols)))
@@ -122,6 +168,7 @@ def build_case_gallery(
         "seed": seed,
         "n_per_category": n_per_category,
         "sample_seed": sample_seed,
+        "min_id_gap": min_id_gap,
         "counts_total": counts,
         "selected": {},
     }
@@ -186,7 +233,18 @@ def main():
     p.add_argument("--n_per_category", type=int, default=24)
     p.add_argument("--cols", type=int, default=6)
     p.add_argument("--tile_size", type=int, default=180)
-    p.add_argument("--sample_seed", type=int, default=42)
+    p.add_argument(
+        "--sample_seed",
+        type=int,
+        default=None,
+        help="sampling seed; default None for random selection each run",
+    )
+    p.add_argument(
+        "--min_id_gap",
+        type=int,
+        default=30,
+        help="minimum gap between sampled numeric case ids to reduce contiguous picks",
+    )
 
     args = p.parse_args()
 
@@ -208,6 +266,7 @@ def main():
         cols=max(1, args.cols),
         tile_size=max(64, args.tile_size),
         sample_seed=args.sample_seed,
+        min_id_gap=max(0, args.min_id_gap),
     )
 
     print(f"[saved] {out_png}")

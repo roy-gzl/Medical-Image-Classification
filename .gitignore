@@ -10,7 +10,7 @@ Miniconda*.sh
 miniconda*.sh
 
 # Experiment outputs
-# runs/
+runs/
 # *.png
 
 # PyTorch checkpoints
